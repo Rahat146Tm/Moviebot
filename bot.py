@@ -1,9 +1,12 @@
 import os
 import logging
 from flask import Flask
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ParseMode
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
 from imdb import IMDb
+from threading import Thread
+from datetime import datetime
+import time
 
 # Set up logging for debugging
 logging.basicConfig(level=logging.INFO)
@@ -29,6 +32,9 @@ admins.add(default_admin)
 @app.route('/')
 def health_check():
     return "Bot is running!", 200
+
+# Custom welcome GIF for new users
+WELCOME_GIF = "https://media.giphy.com/media/l4EoXfRgs6nIuCImk/giphy.gif"
 
 # Add admin command
 def add_admin(update: Update, context: CallbackContext) -> None:
@@ -59,19 +65,32 @@ def remove_admin(update: Update, context: CallbackContext) -> None:
     else:
         update.message.reply_text(f"User {admin_id} is not an admin.")
 
-# Custom welcome message (admin only)
-def set_welcome_message(update: Update, context: CallbackContext) -> None:
-    if update.effective_user.id not in admins:
-        update.message.reply_text("Only admins can set the welcome message.")
-        return
-    welcome_message = ' '.join(context.args)
-    os.environ['WELCOME_MESSAGE'] = welcome_message
-    update.message.reply_text("Welcome message updated.")
+# Dynamic main menu with buttons
+def main_menu(update: Update, context: CallbackContext) -> None:
+    keyboard = [
+        [InlineKeyboardButton("Search IMDb", callback_data='search')],
+        [InlineKeyboardButton("Request Movie", callback_data='request')],
+        [InlineKeyboardButton("View Filters", callback_data='filters')],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    update.message.reply_text('Welcome to the Bot! Choose an option:', reply_markup=reply_markup)
 
-# Handle new users and send the custom welcome message
+# Callback handler for the main menu
+def button(update: Update, context: CallbackContext) -> None:
+    query = update.callback_query
+    query.answer()
+
+    if query.data == 'search':
+        query.edit_message_text(text="Type the movie name with /imdb <movie_name>.")
+    elif query.data == 'request':
+        query.edit_message_text(text="Request a movie by using /request <movie_name>.")
+    elif query.data == 'filters':
+        query.edit_message_text(text="Use /listfilters to see all current filters.")
+
+# Welcome new users with a GIF
 def welcome(update: Update, context: CallbackContext) -> None:
     welcome_message = os.getenv('WELCOME_MESSAGE', "Welcome to the channel!")
-    update.message.reply_text(welcome_message)
+    context.bot.send_animation(chat_id=update.message.chat_id, animation=WELCOME_GIF, caption=welcome_message)
 
 # Request movie feature
 def request_movie(update: Update, context: CallbackContext) -> None:
@@ -92,10 +111,17 @@ def imdb_search(update: Update, context: CallbackContext) -> None:
     if movies:
         movie = movies[0]
         ia.update(movie)
-        movie_info = f"Title: {movie['title']}\nYear: {movie['year']}\nRating: {movie.get('rating', 'N/A')}\nPlot: {movie.get('plot outline', 'N/A')}"
-        update.message.reply_text(movie_info)
+        movie_info = f"*Title*: {movie['title']}\n*Year*: {movie['year']}\n*Rating*: {movie.get('rating', 'N/A')}\n*Plot*: {movie.get('plot outline', 'N/A')}"
+        update.message.reply_text(movie_info, parse_mode=ParseMode.MARKDOWN)
     else:
         update.message.reply_text("Movie not found!")
+
+# Scheduled task to clear filters every 24 hours
+def clear_old_filters():
+    while True:
+        time.sleep(86400)  # Wait for 24 hours
+        filters.clear()
+        logging.info("Cleared old filters")
 
 # Add a filter (admin only)
 def add_filter(update: Update, context: CallbackContext) -> None:
@@ -110,15 +136,13 @@ def add_filter(update: Update, context: CallbackContext) -> None:
     filters[keyword] = reply
     update.message.reply_text(f"Filter added: '{keyword}' will trigger '{reply}'.")
 
-# Other bot functions remain unchanged...
-
 # Main function to run the bot
 def main():
     token = os.getenv("TOKEN")
     updater = Updater(token)
     dp = updater.dispatcher
 
-    dp.add_handler(CommandHandler("start", start))
+    dp.add_handler(CommandHandler("start", main_menu))
     dp.add_handler(CommandHandler("addfilter", add_filter))
     dp.add_handler(CommandHandler("removefilter", remove_filter))
     dp.add_handler(CommandHandler("listfilters", list_filters))
@@ -127,13 +151,16 @@ def main():
     dp.add_handler(CommandHandler("request", request_movie))
     dp.add_handler(CommandHandler("addadmin", add_admin))
     dp.add_handler(CommandHandler("removeadmin", remove_admin))
-    dp.add_handler(CommandHandler("setwelcome", set_welcome_message))
-
     dp.add_handler(MessageHandler(Filters.status_update.new_chat_members, welcome))
-    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, filter_from_channel))
+
+    dp.add_handler(CallbackQueryHandler(button))  # Handle inline button clicks
+
+    # Start a thread for clearing old filters
+    thread = Thread(target=clear_old_filters)
+    thread.start()
 
     updater.start_polling()
-    
+
     # For health checks (Heroku)
     app.run(host="0.0.0.0", port=PORT)
 
