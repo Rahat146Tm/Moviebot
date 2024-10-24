@@ -11,7 +11,7 @@ COPY . .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Expose port for health checks
-EXPOSE 5000
+EXPOSE 8000
 
 # Define environment variable
 ENV NAME AutoFilterBot
